@@ -29,6 +29,8 @@ async def extract_tooltip(page,node):
         if t:return t.strip()
     except: pass
     return (await node.get_attribute('title') or await node.get_attribute('data-original-title') or '').strip() or None
+@app.get('/health')
+async def health(): return {'ok':True,'service':'riv-worker'}
 @app.post('/search')
 async def search(data:SearchRequest,authorization:str|None=Header(default=None)):
     await authorize(authorization)
