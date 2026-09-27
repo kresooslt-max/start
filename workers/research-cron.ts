@@ -1,0 +1,5 @@
+import { createClient } from '@supabase/supabase-js';
+import { runResearch } from '../src/lib/research/engine';
+const db=createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!,process.env.SUPABASE_SECRET_KEY!,{auth:{persistSession:false,autoRefreshToken:false}});
+async function main(){const {data:jobs,error}=await db.from('jobs').select('*').eq('status','PENDING').eq('job_type','RESEARCH').order('created_at').limit(5);if(error)throw error;for(const job of jobs||[]){const {data:claimed}=await db.from('jobs').update({status:'PROCESSING',started_at:new Date().toISOString(),attempt_count:(job.attempt_count||0)+1}).eq('id',job.id).eq('status','PENDING').select().maybeSingle();if(!claimed)continue;try{const result=await runResearch(job.product_id,Boolean(job.payload?.useRiv));await db.from('jobs').update({status:'COMPLETED',progress:100,result,finished_at:new Date().toISOString()}).eq('id',job.id)}catch(e:any){await db.from('jobs').update({status:'FAILED',last_error:e?.message||String(e),finished_at:new Date().toISOString()}).eq('id',job.id)}}}
+main().catch(e=>{console.error(e);process.exit(1)});
