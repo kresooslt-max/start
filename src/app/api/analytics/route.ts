@@ -1,0 +1,1 @@
+import {NextResponse} from 'next/server';import {createClient} from '@/lib/supabase/server';export async function GET(){const s=await createClient();const {data,error}=await s.from('analytics_daily').select('day,revenue,ordered_units,cancellations,views,clicks,conversion').order('day',{ascending:true}).limit(366);return NextResponse.json({data,error:error?.message})}

@@ -1,0 +1,1 @@
+export async function rivSearch(article:string){const u=process.env.RIV_WORKER_URL;if(!u)return null;const r=await fetch(u+'/search',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({article})});if(!r.ok)throw new Error('RIV_WORKER_FAILED '+r.status);return r.json()}

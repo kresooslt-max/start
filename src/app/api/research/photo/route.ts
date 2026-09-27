@@ -1,0 +1,1 @@
+import {NextResponse} from 'next/server';export async function POST(){return NextResponse.json({error:'PHOTO_STORAGE_NOT_CONFIGURED'},{status:501})}

@@ -1,0 +1,21 @@
+services:
+  web:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    depends_on: [riv-worker]
+  research-worker:
+    build: .
+    env_file: .env
+    command: ["npm","run","worker"]
+    restart: unless-stopped
+  riv-worker:
+    build: ./services/riv-worker
+    env_file: .env
+    restart: unless-stopped
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on: [web]
+    ports: ["80:80"]
+    volumes: ["./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"]

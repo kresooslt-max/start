@@ -1,0 +1,1 @@
+import {NextResponse} from 'next/server';import {createClient} from '@/lib/supabase/server';export async function GET(){const s=await createClient();const {data,error}=await s.from('research_runs').select('*').order('created_at',{ascending:false}).limit(100);return NextResponse.json({data,error:error?.message})}
