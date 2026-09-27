@@ -1,1 +1,2 @@
-import {NextResponse} from 'next/server';export async function GET(){return NextResponse.json({ok:true,service:'startauto'})}
+import {NextResponse} from 'next/server';
+export async function GET(){return NextResponse.json({ok:true,service:'startauto',status:'healthy'});}
