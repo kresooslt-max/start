@@ -79,3 +79,36 @@ sources должны содержать реальные URL, использов
  return RivExplanationSchema.parse(JSON.parse(j.choices?.[0]?.message?.content||'{}'));
 }
 
+
+export const CardSuggestionSchema=z.object({
+ name:z.string().nullable(),
+ annotation:z.string().nullable(),
+ description:z.string().nullable(),
+ hashtags:z.array(z.string()),
+ manufacturer_part_number:z.string().nullable(),
+ tn_ved:z.string().nullable(),
+ compatibility:z.array(z.any()),
+ oem:z.array(z.string()),
+ characteristics:z.record(z.string(),z.string())
+});
+
+export async function generateCardSuggestion(product:any){
+ const key=process.env.AI_API_KEY;if(!key)throw new Error('AI_API_KEY_MISSING');
+ const model=process.env.AI_MODEL||'gpt-4o';
+ const response=await fetch('https://api.openai.com/v1/chat/completions',{
+  method:'POST',
+  headers:{'content-type':'application/json',authorization:'Bearer '+key},
+  body:JSON.stringify({
+   model,
+   messages:[
+    {role:'system',content:'Return JSON only. This legacy endpoint is retained only so unused legacy routes can compile. Never invent facts; use supplied data only.'},
+    {role:'user',content:JSON.stringify(product)}
+   ],
+   temperature:.1,
+   response_format:{type:'json_object'}
+  })
+ });
+ if(!response.ok)throw new Error('AI_REQUEST_FAILED '+response.status);
+ const j=await response.json();
+ return CardSuggestionSchema.parse(JSON.parse(j.choices?.[0]?.message?.content||'{}'));
+}
