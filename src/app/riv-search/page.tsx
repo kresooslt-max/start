@@ -135,6 +135,7 @@ export default function RivSearch(){
      {!explanation
       ? <div className="empty">На втором этапе AI разберёт исходную запись RIV и попробует определить марку, модель, годы, кузов, двигатель, OEM, партномер, цену и назначение детали по найденным источникам.</div>
       : <div style={{marginTop:14}}>
+         {result.card.photos.length>0&&<div className="photoStrip" style={{marginBottom:12}}>{result.card.photos.map((src,i)=><div className="photoTile" key={src+i}><img src={src} alt={result.card.title||result.article}/></div>)}</div>}
          <div className="grid2">
           <section className="panel" style={{padding:14}}>
            <div className="panelTitle">Что это за деталь</div>
