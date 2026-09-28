@@ -1,38 +1,32 @@
-import os, asyncio, re, traceback
-from urllib.parse import quote_plus
+import os
+import asyncio
+import re
+import traceback
+from urllib.parse import quote_plus, urljoin
+
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
-app=FastAPI(title='StartAuto RIV Worker')
+app=FastAPI(title="StartAuto RIV Worker")
 lock=asyncio.Lock()
-
-def structured_result(article, compatibility, page_url=None):
-    """Only expose values which occur in RIV text; blank fields stay null."""
-    raw=compatibility or ''
-    brands='Toyota|Lexus|Nissan|Infiniti|Honda|Mazda|Mitsubishi|Subaru|Suzuki|Hyundai|Kia|Ford|Chevrolet|Volkswagen|Audi|BMW|Mercedes[- ]Benz|Skoda|Volvo|Renault|Peugeot|Citroen|Geely|Chery|Haval|Opel|Fiat|Daewoo|Lada|ВАЗ|ГАЗ|УАЗ'
-    oems=list(dict.fromkeys(re.findall(r'(?i)(?:OEM|ОЕМ)\s*[:#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})',raw)))
-    vehicles=[]
-    for line in [x.strip() for x in re.split(r'[\n•;]+',raw) if x.strip()]:
-        brand=re.search(r'(?i)\b('+brands+r')\b',line)
-        years=re.search(r'\b((?:19|20)\d{2}(?:\s*[–—-]\s*(?:(?:19|20)?\d{2})?)?)',line)
-        engine=re.search(r'\b(\d(?:[.,]\d)?\s*(?:л|L)(?:\s*(?:бензин|дизель))?)\b',line,re.I)
-        if brand or years or engine:
-            vehicles.append({'brand':brand.group(1) if brand else None,'model':None,'generation':None,'body':None,'years':years.group(1) if years else None,'engine':engine.group(1) if engine else None,'oem':oems,'notes':None,'raw':line})
-    return {'found':bool(raw),'source':'RIV.KZ','article':article,'compatibility':compatibility,'vehicles':vehicles,'oem':oems,'raw_text':raw,'confidence':90 if raw else 0,'page_url':page_url}
 
 class SearchRequest(BaseModel):
     article:str
 
+KNOWN_BRANDS=r"Toyota|Lexus|Nissan|Infiniti|Honda|Mazda|Mitsubishi|Subaru|Suzuki|Hyundai|Kia|Ford|Chevrolet|GMC|Volkswagen|Audi|BMW|Mercedes(?:[- ]Benz)?|Skoda|Volvo|Renault|Peugeot|Citroen|Geely|Chery|Haval|GAC|Great Wall|Isuzu|Land Rover|Porsche|Opel|Fiat|Daewoo|Lada|ВАЗ|ГАЗ|УАЗ|Chevrolet"
+BODY_WORDS=r"седан|универсал|хэтчбек|хетчбек|кроссовер|внедорожник|купе|кабриолет|minivan|минивэн|SUV|MPV|wagon|sedan|hatchback|pickup|van|crossover"
+ENGINE_RE=r"\b(?:\d{1,2}(?:[.,]\d)?(?:\s?л|\s?L)?(?:\s?(?:бензин|дизель|gasoline|diesel))?|V\d|\d(?:[.,]\d)?\s?(?:Turbo|TDI|TSI|MPI|GDI|CRDI))\b"
+
 async def authorize(token):
-    expected=os.getenv('RIV_WORKER_TOKEN')
-    if expected and token != f'Bearer {expected}':
-        raise HTTPException(status_code=401,detail='UNAUTHORIZED')
+    expected=os.getenv("RIV_WORKER_TOKEN")
+    if expected and token != f"Bearer {expected}":
+        raise HTTPException(status_code=401,detail="UNAUTHORIZED")
 
 async def close_modals(page):
     try:
-        await page.keyboard.press('Escape')
-    except:
+        await page.keyboard.press("Escape")
+    except Exception:
         pass
     selectors=["button:has-text('×')","[class*='close']",".modal-header button",".popup-close","button:has-text('Закрыть')"]
     for sel in selectors:
@@ -41,7 +35,7 @@ async def close_modals(page):
             if await loc.is_visible(timeout=400):
                 await loc.click(timeout=1000,force=True)
                 return
-        except:
+        except Exception:
             pass
 
 async def disable_pointer_overlays(page):
@@ -60,118 +54,280 @@ async def disable_pointer_overlays(page):
           }
           return changed;
         }""")
-    except:
+    except Exception:
         return 0
 
 async def trigger_hover(page,node):
     try:
         await node.scroll_into_view_if_needed(timeout=5000)
-    except:
+    except Exception:
         pass
-    try:
-        await node.dispatch_event('pointerover')
-        await node.dispatch_event('mouseover')
-        await node.dispatch_event('mouseenter')
-        await node.dispatch_event('mousemove')
-        return
-    except:
-        pass
+    for event in ("pointerover","mouseover","mouseenter","mousemove"):
+        try:
+            await node.dispatch_event(event)
+        except Exception:
+            pass
     try:
         await node.hover(timeout=5000,force=True)
-    except PlaywrightTimeoutError:
-        pass
-    except:
+    except (PlaywrightTimeoutError, Exception):
         pass
 
-async def visible_text_candidates(page):
+def clean_text(text):
+    return re.sub(r"\s+"," ",str(text or "")).strip()
+
+def clean_multiline(text):
+    lines=[]
+    for line in str(text or "").splitlines():
+        x=clean_text(line)
+        if x and x not in lines:
+            lines.append(x)
+    return lines
+
+def looks_like_ui_noise(text,article):
+    t=clean_text(text).lower()
+    a=article.lower().strip()
+    bad=("поиск:" in t and "фильтр" in t) or t in {
+        a,"фильтры","фильтр","каталог","поиск","вход","войти","регистрация"
+    }
+    return bad
+
+def unique(values):
+    out=[]
+    for value in values:
+        value=clean_text(value)
+        if value and value not in out:
+            out.append(value)
+    return out
+
+async def ancestor_text(page,node,article):
     try:
-        return await page.evaluate("""() => {
-          const out=[];
-          for(const el of document.querySelectorAll('div,span,section,article,td')) {
-            const s=getComputedStyle(el),r=el.getBoundingClientRect(),z=parseInt(s.zIndex||'0'),t=(el.innerText||'').trim();
-            if(!t||t.length<4) continue;
-            if((s.position==='absolute'||s.position==='fixed') && s.display!=='none' && s.visibility!=='hidden' && z>=20 && r.width>40 && r.height>10) out.push(t);
+        return await node.evaluate("""(el, article) => {
+          const candidates=[];
+          let cur=el;
+          for(let i=0;i<7 && cur;i++,cur=cur.parentElement){
+            const t=(cur.innerText||'').trim();
+            if(t) candidates.push(t);
           }
-          return Array.from(new Set(out)).slice(0,30);
-        }""")
-    except:
+          return candidates;
+        }""",article)
+    except Exception:
         return []
 
-async def extract_tooltip(page,nodes):
-    for node in nodes:
-        try:
-            await trigger_hover(page,node)
-            await page.wait_for_timeout(900)
-        except:
-            pass
-        for sel in [
-            'div.tooltip','div.popover','div[role="tooltip"]','.tooltip-inner',
-            '.tippy-content','div[class*="tooltip"]','div[class*="popover"]',
-            '[data-radix-popper-content-wrapper]'
-        ]:
-            try:
-                loc=page.locator(sel).filter(has_text=re.compile(r'\S+')).last
-                if await loc.is_visible(timeout=500):
-                    t=(await loc.inner_text()).strip()
-                    if t and len(t)>=4:
-                        return t
-            except:
-                pass
-        candidates=await visible_text_candidates(page)
-        for t in candidates:
-            if len(t)>=8 and ('год' in t.lower() or 'двиг' in t.lower() or 'кузов' in t.lower() or 'oem' in t.lower() or 'toyota' in t.lower() or 'nissan' in t.lower()):
-                return t
-        for attr in ('title','data-original-title','aria-label'):
-            try:
-                t=(await node.get_attribute(attr) or '').strip()
-                if t:
-                    return t
-            except:
-                pass
+async def extract_candidate_text(page,node,article):
+    candidates=await ancestor_text(page,node,article)
+    good=[]
+    for text in candidates:
+        normalized=clean_text(text)
+        if len(normalized)<8 or looks_like_ui_noise(normalized,article):
+            continue
+        if article.lower() in normalized.lower() or re.search(r"\b(?:OEM|ОЕМ|цена|артикул|партномер|двигател|кузов|год)\b",normalized,re.I):
+            good.append(normalized)
+    if good:
+        return max(good,key=len)
+    return clean_text(candidates[-1] if candidates else "")
+
+async def extract_link(page,node,base):
+    try:
+        href=await node.evaluate("""el => {
+          let cur=el;
+          for(let i=0;i<8 && cur;i++,cur=cur.parentElement){
+            if(cur.tagName==='A' && cur.href) return cur.href;
+          }
+          return null;
+        }""")
+        if href:
+            full=urljoin(base,href)
+            if "/catalog" not in full or "q=" not in full:
+                return full
+    except Exception:
+        pass
     return None
 
-async def card_text(page,node):
+async def extract_images(page):
     try:
-        return (await node.evaluate("""el => {
-          const candidates=[
-            el.closest('a'),el.closest('article'),el.closest('li'),
-            el.closest('[class*="card"]'),el.closest('[class*="product"]'),
-            el.parentElement,el
-          ].filter(Boolean);
-          for(const c of candidates){
-            const t=(c.innerText||'').trim();
-            if(t.length>10) return t;
+        values=await page.evaluate("""() => {
+          const urls=[];
+          const add=(v)=>{
+            if(!v || v.startsWith('data:') || v.endsWith('.svg')) return;
+            try { urls.push(new URL(v,location.href).href); } catch {}
+          };
+          for(const el of document.querySelectorAll('img')){
+            const r=el.getBoundingClientRect();
+            if((r.width>70 && r.height>50) || (el.naturalWidth>120 && el.naturalHeight>80) || el.closest('main,article,[class*="product"],[class*="card"]')){
+              add(el.currentSrc); add(el.src); add(el.getAttribute('data-src')); add(el.getAttribute('data-lazy-src'));
+              const srcset=el.getAttribute('srcset')||el.getAttribute('data-srcset');
+              if(srcset) add(srcset.split(',').pop().trim().split(' ')[0]);
+            }
           }
-          return '';
-        }""")).strip()
-    except:
-        return ''
+          const og=document.querySelector('meta[property="og:image"]');
+          if(og) add(og.getAttribute('content'));
+          for(const el of document.querySelectorAll('[style*="background-image"]')){
+            const m=(el.getAttribute('style')||'').match(/url\\((['"]?)(.*?)\\1\\)/i);
+            if(m) add(m[2]);
+          }
+          return [...new Set(urls)].slice(0,24);
+        }""")
+        return unique(values)
+    except Exception:
+        return []
 
-@app.get('/health')
+def extract_labeled(text,label_patterns):
+    for pattern in label_patterns:
+        m=re.search(pattern,text,re.I)
+        if m:
+            value=clean_text(m.group(1))
+            if value:
+                return value
+    return None
+
+def extract_price(text):
+    patterns=[
+        r"(?i)(?:цена|стоимость|price)\s*[:№#-]?\s*([\d\s.,]+\s*(?:₸|тг|KZT|руб|₽|USD|EUR|\$|€)?)",
+        r"(?<!\d)(\d[\d\s.,]{2,})\s*(₸|тг|KZT|₽|руб|USD|EUR|\$|€)"
+    ]
+    for p in patterns:
+        m=re.search(p,text)
+        if m:
+            value=clean_text(" ".join(x for x in m.groups() if x))
+            if value:
+                return value
+    return None
+
+def extract_oems(text):
+    patterns=[
+        r"(?i)(?:OEM|ОЕМ|OE)\s*[:№#-]?\s*([A-Z0-9][A-Z0-9._/-]{3,})",
+        r"(?i)(?:оригинальный\s+номер|original\s+(?:part\s+)?number)\s*[:№#-]?\s*([A-Z0-9][A-Z0-9._/-]{3,})"
+    ]
+    return unique([m.group(1) for p in patterns for m in re.finditer(p,text)])
+
+def extract_part_numbers(text):
+    patterns=[
+        r"(?i)(?:партномер|part\s*number|manufacturer\s*part\s*number|номер\s+производителя)\s*[:№#-]?\s*([A-Z0-9][A-Z0-9._/-]{3,})"
+    ]
+    return unique([m.group(1) for p in patterns for m in re.finditer(p,text)])
+
+def parse_vehicle_line(line):
+    raw=clean_text(line)
+    if len(raw)<4:
+        return None
+    brand_m=re.search(r"\b("+KNOWN_BRANDS+r")\b",raw,re.I)
+    years_m=re.search(r"\b((?:19|20)\d{2}(?:\s*[–—-]\s*(?:(?:19|20)?\d{2})?)?)",raw)
+    body_m=re.search(r"\b("+BODY_WORDS+r")\b",raw,re.I)
+    engine_m=re.search(ENGINE_RE,raw,re.I)
+    if not (brand_m or years_m or body_m or engine_m):
+        return None
+    brand=brand_m.group(1) if brand_m else None
+    model=None
+    if brand_m:
+        tail=raw[brand_m.end():].strip(" -,:")
+        stop=re.search(r"\b(?:19|20)\d{2}\b|\b"+BODY_WORDS+r"\b|"+ENGINE_RE,tail,re.I)
+        model_part=tail[:stop.start()] if stop else tail
+        model_tokens=[x for x in re.split(r"\s+",model_part) if x][:4]
+        model=clean_text(" ".join(model_tokens)) or None
+    generation=None
+    if model:
+        gen=re.search(r"\b[A-Z]{1,4}\d{2,4}\b|\bXV\d+\b|\bE\d+\b|\bJ\d+\b",model,re.I)
+        if gen:
+            generation=gen.group(0)
+    return {
+        "brand":brand,
+        "model":model,
+        "generation":generation,
+        "body":body_m.group(1) if body_m else None,
+        "years":years_m.group(1) if years_m else None,
+        "engine":engine_m.group(0) if engine_m else None,
+        "fuel":None,
+        "notes":None,
+        "raw":raw
+    }
+
+def parse_vehicles(text):
+    rows=[]
+    for line in clean_multiline(text):
+        if looks_like_ui_noise(line,""):
+            continue
+        item=parse_vehicle_line(line)
+        if item and item["raw"] not in {x["raw"] for x in rows}:
+            rows.append(item)
+    return rows[:100]
+
+async def scrape_page(page,article):
+    text=""
+    for sel in ("main","[role='main']","article","section[class*='product']","div[class*='product']"):
+        try:
+            loc=page.locator(sel).first
+            if await loc.is_visible(timeout=700):
+                candidate=await loc.inner_text(timeout=3000)
+                if len(clean_text(candidate))>=80:
+                    text=candidate
+                    break
+        except Exception:
+            pass
+    if not text:
+        text=await page.locator("body").inner_text(timeout=5000)
+    lines=clean_multiline(text)
+    useful=[x for x in lines if not looks_like_ui_noise(x,article)]
+    raw="\n".join(useful)
+    title=None
+    for sel in ("h1","main h2","article h2","h2"):
+        try:
+            loc=page.locator(sel).filter(has_text=re.compile(r"\S+")).first
+            if await loc.is_visible(timeout=700):
+                t=clean_text(await loc.inner_text())
+                if t and not looks_like_ui_noise(t,article):
+                    title=t
+                    break
+        except Exception:
+            pass
+    brand_m=re.search(r"\b("+KNOWN_BRANDS+r")\b",raw,re.I)
+    category=extract_labeled(raw,[r"(?i)(?:категория|category)\s*[:\-]\s*(.+)",r"(?i)(?:тип\s+детали|вид\s+детали)\s*[:\-]\s*(.+)"])
+    manufacturer_part=extract_labeled(raw,[r"(?i)(?:партномер|part\s*number|номер\s+производителя)\s*[:№#-]?\s*([A-Z0-9][A-Z0-9._/-]{3,})"])
+    price=extract_price(raw)
+    oem=extract_oems(raw)
+    parts=extract_part_numbers(raw)
+    vehicles=parse_vehicles(raw)
+    photos=await extract_images(page)
+    details=useful[:80]
+    return {
+        "title":title,
+        "brand":brand_m.group(1) if brand_m else None,
+        "category":category,
+        "manufacturer_part_number":manufacturer_part,
+        "price":price,
+        "currency":None,
+        "photos":photos,
+        "details":details,
+        "oem":oem,
+        "part_numbers":parts,
+        "vehicles":vehicles,
+        "raw_text":raw
+    }
+
+@app.get("/health")
 async def health():
-    return {'ok':True,'service':'riv-worker'}
+    return {"ok":True,"service":"riv-worker"}
 
-@app.post('/search')
+@app.post("/search")
 async def search(data:SearchRequest,authorization:str|None=Header(default=None)):
     await authorize(authorization)
-    article=data.article.strip()
+    article=clean_text(data.article)
     if not article:
-        raise HTTPException(status_code=400,detail='ARTICLE_REQUIRED')
+        raise HTTPException(status_code=400,detail="ARTICLE_REQUIRED")
     async with lock:
         browser=None
         try:
             async with async_playwright() as p:
-                browser=await p.chromium.launch(headless=os.getenv('RIV_HEADLESS','true').lower()!='false')
-                ctx=await browser.new_context(viewport={'width':1366,'height':768})
+                browser=await p.chromium.launch(headless=os.getenv("RIV_HEADLESS","true").lower()!="false")
+                ctx=await browser.new_context(viewport={"width":1440,"height":900})
                 page=await ctx.new_page()
-                page.set_default_timeout(int(os.getenv('RIV_TIMEOUT_MS','30000')))
-                base=os.getenv('RIV_URL','https://riv.kz').rstrip('/')
+                page.set_default_timeout(int(os.getenv("RIV_TIMEOUT_MS","30000")))
+                base=os.getenv("RIV_URL","https://riv.kz").rstrip("/")
 
-                await page.goto(base+'/login',wait_until='domcontentloaded')
+                await page.goto(base+"/login",wait_until="domcontentloaded")
                 await page.wait_for_timeout(1200)
                 await close_modals(page)
 
-                login,password=os.getenv('RIV_USERNAME'),os.getenv('RIV_PASSWORD')
+                login,password=os.getenv("RIV_USERNAME"),os.getenv("RIV_PASSWORD")
                 if login and password:
                     inp=page.locator("input[type='text'],input[name='login'],input[name='phone'],input[type='tel']").first
                     if await inp.is_visible(timeout=1500):
@@ -183,66 +339,107 @@ async def search(data:SearchRequest,authorization:str|None=Header(default=None))
                         await page.wait_for_timeout(1800)
                         await close_modals(page)
 
-                # RIV search is case-insensitive in practice, but retry with both forms.
                 variants=list(dict.fromkeys([article,article.upper(),article.lower()]))
                 node=None
                 for variant in variants:
-                    await page.goto(base+'/catalog?q='+quote_plus(variant),wait_until='domcontentloaded')
-                    await page.wait_for_timeout(1500)
+                    await page.goto(base+"/catalog?q="+quote_plus(variant),wait_until="domcontentloaded")
+                    await page.wait_for_timeout(1700)
                     await close_modals(page)
-                    exact=page.locator('span.text-ink').filter(has_text=re.compile('^'+re.escape(variant)+'$')).first
-                    if await exact.is_visible(timeout=2000):
+                    exact=page.locator("span.text-ink").filter(has_text=re.compile("^"+re.escape(variant)+"$",re.I)).first
+                    if await exact.is_visible(timeout=2500):
                         node=exact
                         break
                     exact=page.get_by_text(variant,exact=True).first
                     if await exact.is_visible(timeout=1500):
                         node=exact
                         break
-                    fallback=page.locator('.product-card,.catalog-item,article,table tbody tr').first
-                    if await fallback.is_visible(timeout=1000):
-                        node=fallback
-                        break
 
                 if node is None:
-                    print(f'RIV_SEARCH no match article={article} url={page.url}')
-                    await browser.close()
-                    browser=None
-                    return {'found':False,'source':'RIV.KZ','article':article,'compatibility':None,'vehicles':[],'oem':[],'raw_text':'','confidence':0,'reason':'ARTICLE_NOT_FOUND'}
+                    print(f"RIV_SEARCH no match article={article} url={page.url}")
+                    await browser.close();browser=None
+                    return {"found":False,"source":"RIV.KZ","article":article,"card":{},"vehicles":[],"oem":[],"raw_text":"","confidence":0,"reason":"ARTICLE_NOT_FOUND"}
 
-                try:
-                    await node.scroll_into_view_if_needed(timeout=5000)
-                except:
-                    pass
-
-                # Sticky/fixed headers on the current RIV UI can intercept real pointer hover.
                 changed=await disable_pointer_overlays(page)
-                print(f'RIV_SEARCH article={article} url={page.url} overlay_fix={changed}')
+                await trigger_hover(page,node)
+                await page.wait_for_timeout(1200)
+                print(f"RIV_SEARCH article={article} url={page.url} overlay_fix={changed}")
 
-                nodes=[node]
-                for sel in ['h1','h2','h3','h4','h5','.title','.name','span.text-ink','p','td']:
+                current_text=await extract_candidate_text(page,node,article)
+                hover_result=None
+                for sel in ["div.tooltip","div.popover","div[role='tooltip']",".tooltip-inner",".tippy-content","div[class*='tooltip']","div[class*='popover']","[data-radix-popper-content-wrapper]"]:
                     try:
-                        parent=node.locator('xpath=ancestor::*').locator(sel).first
-                        if await parent.is_visible(timeout=300):
-                            nodes.append(parent)
-                    except:
+                        loc=page.locator(sel).filter(has_text=re.compile(r"\S+")).last
+                        if await loc.is_visible(timeout=500):
+                            t=clean_text(await loc.inner_text())
+                            if t and not looks_like_ui_noise(t,article):
+                                hover_result=t
+                                break
+                    except Exception:
                         pass
 
-                compatibility=await extract_tooltip(page,nodes)
-                fallback_text=await card_text(page,node)
+                if hover_result and len(hover_result)>len(current_text):
+                    current_text=hover_result
 
-                # The card text is still useful when RIV renders compatibility inline rather than in a tooltip.
-                if not compatibility and fallback_text and fallback_text.lower().strip()!=article.lower():
-                    compatibility=fallback_text
+                detail_url=await extract_link(page,node,base)
+                detail={}
+                if detail_url:
+                    detail_page=await ctx.new_page()
+                    try:
+                        await detail_page.goto(detail_url,wait_until="domcontentloaded")
+                        await detail_page.wait_for_timeout(1500)
+                        await close_modals(detail_page)
+                        detail=await scrape_page(detail_page,article)
+                    except Exception as e:
+                        print(f"RIV_SEARCH detail scrape failed article={article} error={type(e).__name__}")
+                    finally:
+                        await detail_page.close()
 
-                print(f'RIV_SEARCH result article={article} found={bool(compatibility)} compatibility_len={len(compatibility or "")}')
-                await browser.close()
-                browser=None
-                return structured_result(article,compatibility,page.url)
+                if not detail:
+                    detail={}
+
+                card_text=clean_text(current_text)
+                if looks_like_ui_noise(card_text,article):
+                    card_text=""
+
+                card={
+                    "title":detail.get("title") or (card_text if card_text and article.lower() not in card_text.lower() else None),
+                    "brand":detail.get("brand"),
+                    "category":detail.get("category"),
+                    "manufacturer_part_number":detail.get("manufacturer_part_number"),
+                    "price":detail.get("price") or extract_price(card_text),
+                    "currency":detail.get("currency"),
+                    "photos":detail.get("photos",[]) or await extract_images(page),
+                    "details":detail.get("details",[])
+                }
+
+                raw_text=detail.get("raw_text") or card_text
+                vehicles=detail.get("vehicles",[]) or parse_vehicles(raw_text)
+                oem=unique((detail.get("oem",[]) or []) + extract_oems(raw_text))
+                parts=unique((detail.get("part_numbers",[]) or []) + extract_part_numbers(raw_text))
+
+                meaningful=raw_text and not looks_like_ui_noise(raw_text,article)
+                found=bool(meaningful or card["title"] or card["photos"] or vehicles or oem)
+                print(f"RIV_SEARCH result article={article} found={found} raw_len={len(raw_text or '')} photos={len(card['photos'])} vehicles={len(vehicles)} oem={len(oem)}")
+
+                await browser.close();browser=None
+                return {
+                    "found":found,
+                    "source":"RIV.KZ",
+                    "article":article,
+                    "card":card,
+                    "vehicles":vehicles,
+                    "oem":oem,
+                    "part_numbers":parts,
+                    "raw_text":raw_text or "",
+                    "confidence":90 if found else 0,
+                    "page_url":page.url,
+                    "detail_url":detail_url
+                }
         except HTTPException:
             raise
         except Exception as e:
             traceback.print_exc()
             if browser:
                 try: await browser.close()
-                except: pass
+                except Exception: pass
             raise HTTPException(status_code=500,detail=str(e))
