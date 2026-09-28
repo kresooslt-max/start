@@ -86,9 +86,9 @@ def clean_multiline(text):
 def looks_like_ui_noise(text,article):
     t=clean_text(text).lower()
     a=article.lower().strip()
-    bad=("поиск:" in t and "фильтр" in t) or t in {
+    bad=("поиск:" in t and ("фильтр" in t or "фильтры" in t)) or t in {
         a,"фильтры","фильтр","каталог","поиск","вход","войти","регистрация"
-    }
+    } or any(x in t for x in ("добавить в корзину","личный кабинет","главная страница","меню"))
     return bad
 
 def unique(values):
@@ -126,6 +126,63 @@ async def extract_candidate_text(page,node,article):
         return max(good,key=len)
     return clean_text(candidates[-1] if candidates else "")
 
+async def extract_riv_description(page,node,article):
+    values=[]
+    for event in ("pointerover","mouseover","mouseenter","mousemove"):
+        try: await node.dispatch_event(event)
+        except Exception: pass
+    try: await page.wait_for_timeout(900)
+    except Exception: pass
+    try:
+        described=await node.get_attribute("aria-describedby")
+        if described:
+            for ident in described.split():
+                loc=page.locator("#"+ident).first
+                if await loc.is_visible(timeout=500):
+                    t=clean_text(await loc.inner_text())
+                    if t and not looks_like_ui_noise(t,article): values.append(t)
+    except Exception: pass
+    for sel in (
+        'div[role="tooltip"]','div.tooltip','div.popover','.tooltip-inner','.tippy-content',
+        '[data-radix-popper-content-wrapper]','[data-popper-placement]',
+        '[class*="tooltip"]','[class*="popover"]'
+    ):
+        try:
+            loc=page.locator(sel).filter(has_text=re.compile(r"\S+")).last
+            if await loc.is_visible(timeout=500):
+                t=clean_text(await loc.inner_text())
+                if t and not looks_like_ui_noise(t,article): values.append(t)
+        except Exception: pass
+    for attr in ("title","data-original-title","data-title","aria-label"):
+        try:
+            t=clean_text(await node.get_attribute(attr))
+            if t and t.lower()!=article.lower() and not looks_like_ui_noise(t,article): values.append(t)
+        except Exception: pass
+    if values: return max(values,key=len)
+    candidates=await ancestor_text(page,node,article)
+    candidates=[clean_text(x) for x in candidates if clean_text(x) and not looks_like_ui_noise(x,article) and clean_text(x).lower()!=article.lower()]
+    return max(candidates,key=len) if candidates else None
+
+async def extract_product_title(page,node,article):
+    candidates=[]
+    for sel in ("h1","h2","h3","h4","h5","[class*='product-title']","[class*='product-name']","[class*='title']","[class*='name']"):
+        try:
+            loc=page.locator(sel).filter(has_text=re.compile(r"\S+"))
+            count=min(await loc.count(),20)
+            for i in range(count):
+                item=loc.nth(i)
+                if not await item.is_visible(timeout=250): continue
+                t=clean_text(await item.inner_text())
+                if 3<=len(t)<=220 and t.lower()!=article.lower() and not looks_like_ui_noise(t,article):
+                    candidates.append(t)
+        except Exception: pass
+    try:
+        meta=page.locator('meta[property="og:title"]').first
+        t=clean_text(await meta.get_attribute("content"))
+        if t and t.lower()!=article.lower() and not looks_like_ui_noise(t,article): candidates.append(t)
+    except Exception: pass
+    return max(candidates,key=lambda x:(article.lower() not in x.lower(),len(x))) if candidates else None
+
 async def extract_link(page,node,base):
     try:
         href=await node.evaluate("""el => {
@@ -143,34 +200,33 @@ async def extract_link(page,node,base):
         pass
     return None
 
-async def extract_images(page):
+async def extract_images(page,scope=None):
     try:
-        values=await page.evaluate("""() => {
+        return await page.evaluate("""(scope) => {
           const urls=[];
           const add=(v)=>{
             if(!v || v.startsWith('data:') || v.endsWith('.svg')) return;
+            const low=v.toLowerCase();
+            if(low.includes('logo') || low.includes('favicon') || low.includes('sprite') || low.includes('icon')) return;
             try { urls.push(new URL(v,location.href).href); } catch {}
           };
-          for(const el of document.querySelectorAll('img')){
+          const root=scope ? document.querySelector(scope) : document.querySelector('main,article,[class*="product"],[class*="card"]');
+          if(!root) return [];
+          for(const el of root.querySelectorAll('img')){
             const r=el.getBoundingClientRect();
-            if((r.width>70 && r.height>50) || (el.naturalWidth>120 && el.naturalHeight>80) || el.closest('main,article,[class*="product"],[class*="card"]')){
+            const alt=(el.getAttribute('alt')||'').toLowerCase();
+            const cls=(el.className||'').toString().toLowerCase();
+            if(alt.includes('logo') || cls.includes('logo')) continue;
+            if((r.width>=90 && r.height>=70) || (el.naturalWidth>=140 && el.naturalHeight>=100) || cls.includes('product') || cls.includes('gallery')){
               add(el.currentSrc); add(el.src); add(el.getAttribute('data-src')); add(el.getAttribute('data-lazy-src'));
               const srcset=el.getAttribute('srcset')||el.getAttribute('data-srcset');
               if(srcset) add(srcset.split(',').pop().trim().split(' ')[0]);
             }
           }
-          const og=document.querySelector('meta[property="og:image"]');
-          if(og) add(og.getAttribute('content'));
-          for(const el of document.querySelectorAll('[style*="background-image"]')){
-            const m=(el.getAttribute('style')||'').match(/url\\((['"]?)(.*?)\\1\\)/i);
-            if(m) add(m[2]);
-          }
-          return [...new Set(urls)].slice(0,24);
-        }""")
-        return unique(values)
+          return [...new Set(urls)].slice(0,12);
+        }""",scope)
     except Exception:
         return []
-
 def extract_labeled(text,label_patterns):
     for pattern in label_patterns:
         m=re.search(pattern,text,re.I)
@@ -361,24 +417,11 @@ async def search(data:SearchRequest,authorization:str|None=Header(default=None))
 
                 changed=await disable_pointer_overlays(page)
                 await trigger_hover(page,node)
-                await page.wait_for_timeout(1200)
                 print(f"RIV_SEARCH article={article} url={page.url} overlay_fix={changed}")
 
-                current_text=await extract_candidate_text(page,node,article)
-                hover_result=None
-                for sel in ["div.tooltip","div.popover","div[role='tooltip']",".tooltip-inner",".tippy-content","div[class*='tooltip']","div[class*='popover']","[data-radix-popper-content-wrapper]"]:
-                    try:
-                        loc=page.locator(sel).filter(has_text=re.compile(r"\S+")).last
-                        if await loc.is_visible(timeout=500):
-                            t=clean_text(await loc.inner_text())
-                            if t and not looks_like_ui_noise(t,article):
-                                hover_result=t
-                                break
-                    except Exception:
-                        pass
-
-                if hover_result and len(hover_result)>len(current_text):
-                    current_text=hover_result
+                # Stage 1 source data: article + actual RIV product title + internal description/applicability.
+                description=await extract_riv_description(page,node,article)
+                title=await extract_product_title(page,node,article)
 
                 detail_url=await extract_link(page,node,base)
                 detail={}
@@ -386,7 +429,7 @@ async def search(data:SearchRequest,authorization:str|None=Header(default=None))
                     detail_page=await ctx.new_page()
                     try:
                         await detail_page.goto(detail_url,wait_until="domcontentloaded")
-                        await detail_page.wait_for_timeout(1500)
+                        await detail_page.wait_for_timeout(1800)
                         await close_modals(detail_page)
                         detail=await scrape_page(detail_page,article)
                     except Exception as e:
@@ -394,32 +437,23 @@ async def search(data:SearchRequest,authorization:str|None=Header(default=None))
                     finally:
                         await detail_page.close()
 
-                if not detail:
-                    detail={}
+                if detail:
+                    title=detail.get("title") or title
+                    photos=detail.get("photos",[]) or []
+                    detail_description=detail.get("raw_text") or ""
+                else:
+                    photos=await extract_images(page)
+                    detail_description=""
 
-                card_text=clean_text(current_text)
-                if looks_like_ui_noise(card_text,article):
-                    card_text=""
-
+                product_description=detail_description or description or ""
+                # Only product media/content is returned. No site-wide logo/OG images and no parser-derived OEM/price.
                 card={
-                    "title":detail.get("title") or (card_text if card_text and article.lower() not in card_text.lower() else None),
-                    "brand":detail.get("brand"),
-                    "category":detail.get("category"),
-                    "manufacturer_part_number":detail.get("manufacturer_part_number"),
-                    "price":detail.get("price") or extract_price(card_text),
-                    "currency":detail.get("currency"),
-                    "photos":detail.get("photos",[]) or await extract_images(page),
-                    "details":detail.get("details",[])
+                    "title":title,
+                    "photos":photos,
+                    "description":product_description
                 }
-
-                raw_text=detail.get("raw_text") or card_text
-                vehicles=detail.get("vehicles",[]) or parse_vehicles(raw_text)
-                oem=unique((detail.get("oem",[]) or []) + extract_oems(raw_text))
-                parts=unique((detail.get("part_numbers",[]) or []) + extract_part_numbers(raw_text))
-
-                meaningful=raw_text and not looks_like_ui_noise(raw_text,article)
-                found=bool(meaningful or card["title"] or card["photos"] or vehicles or oem)
-                print(f"RIV_SEARCH result article={article} found={found} raw_len={len(raw_text or '')} photos={len(card['photos'])} vehicles={len(vehicles)} oem={len(oem)}")
+                found=bool(title or product_description or photos)
+                print(f"RIV_SEARCH result article={article} found={found} raw_len={len(product_description)} photos={len(photos)} title={bool(title)}")
 
                 await browser.close();browser=None
                 return {
@@ -427,10 +461,10 @@ async def search(data:SearchRequest,authorization:str|None=Header(default=None))
                     "source":"RIV.KZ",
                     "article":article,
                     "card":card,
-                    "vehicles":vehicles,
-                    "oem":oem,
-                    "part_numbers":parts,
-                    "raw_text":raw_text or "",
+                    "vehicles":[],
+                    "oem":[],
+                    "part_numbers":[],
+                    "raw_text":product_description,
                     "confidence":90 if found else 0,
                     "page_url":page.url,
                     "detail_url":detail_url
