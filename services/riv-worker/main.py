@@ -252,7 +252,19 @@ def parse_vehicles(text):
     return rows[:100]
 
 async def scrape_page(page,article):
-    text=await page.locator("body").inner_text(timeout=5000)
+    text=""
+    for sel in ("main","[role='main']","article","section[class*='product']","div[class*='product']"):
+        try:
+            loc=page.locator(sel).first
+            if await loc.is_visible(timeout=700):
+                candidate=await loc.inner_text(timeout=3000)
+                if len(clean_text(candidate))>=80:
+                    text=candidate
+                    break
+        except Exception:
+            pass
+    if not text:
+        text=await page.locator("body").inner_text(timeout=5000)
     lines=clean_multiline(text)
     useful=[x for x in lines if not looks_like_ui_noise(x,article)]
     raw="\n".join(useful)
