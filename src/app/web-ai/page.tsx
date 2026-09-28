@@ -1,8 +1,2 @@
-'use client';
-import {useState} from 'react';
-import {AppShell} from '@/components/AppShell';
-export default function WebAi(){
- const [message,setMessage]=useState(''); const [items,setItems]=useState<any[]>([]); const [busy,setBusy]=useState(false);
- async function send(e:React.FormEvent){e.preventDefault();if(!message.trim())return;const q=message;setMessage('');setItems(x=>[...x,{q}]);setBusy(true);const r=await fetch('/api/web-ai',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:q})});const d=await r.json();setItems(x=>[...x,{answer:d.answer||d.error,sources:d.sources||[]}]);setBusy(false)}
- return <AppShell><div className="topbar"><div><div className="eyebrow">WEB / AI</div><div className="pageTitle">Рабочий поиск</div></div></div><div className="page"><section className="panel"><div className="panelSub">Вопросы по автозапчастям, OEM и характеристикам. Ответ не меняет карточки автоматически.</div><div className="chat">{items.map((item,i)=>item.q ? <div className="chatUser" key={i}>Вы: {item.q}</div> : <div className="chatAnswer" key={i}><b>AI</b><p>{item.answer}</p>{item.sources.length>0&&<div>Источники: {item.sources.map((source:any,j:number)=><a key={j} href={source.url} target="_blank">{source.title}{j < item.sources.length - 1 ? ', ' : ''}</a>)}</div>}</div>)}</div><form className="toolbar" onSubmit={send} style={{marginTop:14}}><div className="search"><input value={message} onChange={e=>setMessage(e.target.value)} placeholder="Что нужно найти?"/></div><button className="btn btnPrimary" disabled={busy}>{busy?'Поиск…':'Отправить'}</button></form></section></div></AppShell>
-}
+import {redirect} from 'next/navigation';
+export default function WebAi(){redirect('/riv-search')}
