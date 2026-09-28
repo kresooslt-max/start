@@ -7,6 +7,20 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 app=FastAPI(title='StartAuto RIV Worker')
 lock=asyncio.Lock()
 
+def structured_result(article, compatibility, page_url=None):
+    """Only expose values which occur in RIV text; blank fields stay null."""
+    raw=compatibility or ''
+    brands='Toyota|Lexus|Nissan|Infiniti|Honda|Mazda|Mitsubishi|Subaru|Suzuki|Hyundai|Kia|Ford|Chevrolet|Volkswagen|Audi|BMW|Mercedes[- ]Benz|Skoda|Volvo|Renault|Peugeot|Citroen|Geely|Chery|Haval|Opel|Fiat|Daewoo|Lada|ВАЗ|ГАЗ|УАЗ'
+    oems=list(dict.fromkeys(re.findall(r'(?i)(?:OEM|ОЕМ)\s*[:#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})',raw)))
+    vehicles=[]
+    for line in [x.strip() for x in re.split(r'[\n•;]+',raw) if x.strip()]:
+        brand=re.search(r'(?i)\b('+brands+r')\b',line)
+        years=re.search(r'\b((?:19|20)\d{2}(?:\s*[–—-]\s*(?:(?:19|20)?\d{2})?)?)',line)
+        engine=re.search(r'\b(\d(?:[.,]\d)?\s*(?:л|L)(?:\s*(?:бензин|дизель))?)\b',line,re.I)
+        if brand or years or engine:
+            vehicles.append({'brand':brand.group(1) if brand else None,'model':None,'generation':None,'body':None,'years':years.group(1) if years else None,'engine':engine.group(1) if engine else None,'oem':oems,'notes':None,'raw':line})
+    return {'found':bool(raw),'source':'RIV.KZ','article':article,'compatibility':compatibility,'vehicles':vehicles,'oem':oems,'raw_text':raw,'confidence':90 if raw else 0,'page_url':page_url}
+
 class SearchRequest(BaseModel):
     article:str
 
@@ -193,7 +207,7 @@ async def search(data:SearchRequest,authorization:str|None=Header(default=None))
                     print(f'RIV_SEARCH no match article={article} url={page.url}')
                     await browser.close()
                     browser=None
-                    return {'found':False,'source':'RIV.KZ','article':article,'compatibility':None,'confidence':0,'reason':'ARTICLE_NOT_FOUND'}
+                    return {'found':False,'source':'RIV.KZ','article':article,'compatibility':None,'vehicles':[],'oem':[],'raw_text':'','confidence':0,'reason':'ARTICLE_NOT_FOUND'}
 
                 try:
                     await node.scroll_into_view_if_needed(timeout=5000)
@@ -223,14 +237,7 @@ async def search(data:SearchRequest,authorization:str|None=Header(default=None))
                 print(f'RIV_SEARCH result article={article} found={bool(compatibility)} compatibility_len={len(compatibility or "")}')
                 await browser.close()
                 browser=None
-                return {
-                    'found':bool(compatibility),
-                    'source':'RIV.KZ',
-                    'article':article,
-                    'compatibility':compatibility,
-                    'confidence':90 if compatibility else 0,
-                    'page_url':page.url
-                }
+                return structured_result(article,compatibility,page.url)
         except HTTPException:
             raise
         except Exception as e:

@@ -34,8 +34,10 @@ export async function POST(req:Request){
     const result=await rivSearch(article);
     if(!result)return NextResponse.json({error:'RIV_NOT_CONFIGURED'},{status:503});
     const compatibility=parseCompatibility(String(result.compatibility||''));
-    return NextResponse.json({...result,compatibility:compatibility.raw,vehicles:compatibility.rows});
+    const workerVehicles=Array.isArray(result.vehicles)&&result.vehicles.length?result.vehicles:compatibility.rows;
+    const oem=[...new Set([...(Array.isArray(result.oem)?result.oem:[]),...compatibility.rows.map((v:any)=>v?.oem).filter(Boolean)])];
+    return NextResponse.json({...result,compatibility:compatibility.raw,raw_text:result.raw_text||compatibility.raw,vehicles:workerVehicles,oem});
   }catch(e){
-    return NextResponse.json({error:e instanceof Error?e.message:'RIV_SEARCH_FAILED'},{status:502});
+    console.error('riv search',e);return NextResponse.json({error:'RIV временно недоступен'},{status:502});
   }
 }
