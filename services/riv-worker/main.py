@@ -227,6 +227,38 @@ async def extract_images(page,scope=None):
         }""",scope)
     except Exception:
         return []
+async def extract_images_from_node(node):
+    try:
+        return await node.evaluate("""el => {
+          const urls=[];
+          const add=(v)=>{
+            if(!v || v.startsWith('data:') || v.endsWith('.svg')) return;
+            const low=v.toLowerCase();
+            if(low.includes('logo') || low.includes('favicon') || low.includes('sprite') || low.includes('icon')) return;
+            try { urls.push(new URL(v,location.href).href); } catch {}
+          };
+          let root=el;
+          for(let i=0;i<8 && root;i++,root=root.parentElement){
+            const cls=(root.className||'').toString().toLowerCase();
+            if(root.tagName==='ARTICLE' || cls.includes('product-card') || cls.includes('catalog-item') || cls.includes('product') || cls.includes('card')) break;
+          }
+          if(!root) return [];
+          for(const img of root.querySelectorAll('img')){
+            const r=img.getBoundingClientRect();
+            const alt=(img.getAttribute('alt')||'').toLowerCase();
+            const cls=(img.className||'').toString().toLowerCase();
+            if(alt.includes('logo') || cls.includes('logo')) continue;
+            if((r.width>=90 && r.height>=70) || (img.naturalWidth>=140 && img.naturalHeight>=100) || cls.includes('product') || cls.includes('gallery')){
+              add(img.currentSrc);add(img.src);add(img.getAttribute('data-src'));add(img.getAttribute('data-lazy-src'));
+              const srcset=img.getAttribute('srcset')||img.getAttribute('data-srcset');
+              if(srcset) add(srcset.split(',').pop().trim().split(' ')[0]);
+            }
+          }
+          return [...new Set(urls)].slice(0,12);
+        }""")
+    except Exception:
+        return []
+
 def extract_labeled(text,label_patterns):
     for pattern in label_patterns:
         m=re.search(pattern,text,re.I)
@@ -344,6 +376,17 @@ async def scrape_page(page,article):
     vehicles=parse_vehicles(raw)
     photos=await extract_images(page)
     details=useful[:80]
+    description_text=None
+    for sel in ("[class*='description']","[class*='desc']","[id*='description']"):
+        try:
+            loc=page.locator(sel).filter(has_text=re.compile(r"\S+")).first
+            if await loc.is_visible(timeout=500):
+                t=clean_text(await loc.inner_text())
+                if len(t)>=20 and not looks_like_ui_noise(t,article):
+                    description_text=t
+                    break
+        except Exception:
+            pass
     return {
         "title":title,
         "brand":brand_m.group(1) if brand_m else None,
@@ -353,6 +396,7 @@ async def scrape_page(page,article):
         "currency":None,
         "photos":photos,
         "details":details,
+        "description":description_text or "",
         "oem":oem,
         "part_numbers":parts,
         "vehicles":vehicles,
@@ -442,7 +486,7 @@ async def search(data:SearchRequest,authorization:str|None=Header(default=None))
                     photos=detail.get("photos",[]) or []
                     detail_description=detail.get("raw_text") or ""
                 else:
-                    photos=await extract_images(page)
+                    photos=await extract_images_from_node(node)
                     detail_description=""
 
                 product_description=detail_description or description or ""
