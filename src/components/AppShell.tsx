@@ -1,4 +1,17 @@
 'use client';
-import Link from 'next/link';import {usePathname} from 'next/navigation';import {PackageSearch,SearchCheck,MessageSquare} from 'lucide-react';
-const items=[['/products','Товары',PackageSearch],['/riv-search','RIV',SearchCheck],['/web-ai','Web / AI',MessageSquare]] as const;
-export function AppShell({children}:{children:React.ReactNode}){const path=usePathname();return <div className="shell"><aside className="sidebar"><div className="brand"><div className="brandMark">SA</div><div><div className="brandTitle">StartAuto</div><div className="brandSub">Ozon Card Manager</div></div></div><nav className="nav">{items.map(([href,label,Icon])=><Link key={href} href={href} className={'navItem '+(path.startsWith(href.split('?')[0])?'active':'')}><Icon size={16}/><span>{label}</span></Link>)}</nav><div className="sidebarSection"><div className="sectionTitle">Система</div><div className="statusLine"><i className="statusDot green"/>Ozon<span className="statusText">API</span></div><div className="statusLine"><i className="statusDot blue"/>Web search<span className="statusText">Основной</span></div><div className="statusLine"><i className="statusDot amber"/>RIV.KZ<span className="statusText">По запросу</span></div></div><div className="userBox"><div className="avatar">A</div><div><div className="userName">StartAuto</div><div className="userRole">Тестовый режим</div></div></div></aside><main className="main">{children}</main></div>}
+import Link from 'next/link';
+import {usePathname} from 'next/navigation';
+import {SearchCheck} from 'lucide-react';
+
+export function AppShell({children}:{children:React.ReactNode}){
+ const path=usePathname();
+ return <div className="shell">
+  <aside className="sidebar">
+   <div className="brand"><div className="brandMark">SA</div><div><div className="brandTitle">StartAuto</div><div className="brandSub">RIV catalog reader</div></div></div>
+   <nav className="nav"><Link href="/riv-search" className={'navItem '+(path.startsWith('/riv-search')?'active':'')}><SearchCheck size={16}/><span>Поиск RIV</span></Link></nav>
+   <div className="sidebarSection"><div className="sectionTitle">Источник</div><div className="statusLine"><i className="statusDot amber"/>RIV.KZ<span className="statusText">основной</span></div></div>
+   <div className="userBox"><div className="avatar">R</div><div><div className="userName">StartAuto</div><div className="userRole">RIV режим</div></div></div>
+  </aside>
+  <main className="main">{children}</main>
+ </div>
+}
