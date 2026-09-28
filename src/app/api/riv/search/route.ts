@@ -1,5 +1,4 @@
 import {NextResponse} from 'next/server';
-import {createClient} from '@/lib/supabase/server';
 import {rivSearch} from '@/lib/riv/client';
 
 function clean(v:string){return v.replace(/\s+/g,' ').trim();}
@@ -28,9 +27,6 @@ function parseCompatibility(text:string){
 }
 
 export async function POST(req:Request){
-  const s=await createClient();
-  const {data:{user}}=await s.auth.getUser();
-  if(!user)return NextResponse.json({error:'UNAUTHORIZED'},{status:401});
   try{
     const body=await req.json();
     const article=String(body?.article||'').trim();
