@@ -2,6 +2,7 @@ import {NextResponse} from 'next/server';
 import {rivSearch} from '@/lib/riv/client';
 
 const clean=(v:any)=>String(v??'').replace(/\s+/g,' ').trim();
+const preserve=(v:any)=>String(v??'').replace(/\r\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
 
 export async function POST(req:Request){
   try{
@@ -14,19 +15,14 @@ export async function POST(req:Request){
 
     const card=result.card||{};
     const photos=Array.isArray(card.photos)?card.photos.filter((x:any)=>typeof x==='string'&&x.trim()).slice(0,12):[];
-    const description=clean(card.description||result.raw_text||'');
+    const description=preserve(card.description||result.raw_text||'');
     const found=Boolean(result.found && (card.title||description||photos.length));
 
     return NextResponse.json({
       found,
       source:'RIV.KZ',
       article,
-      card:{
-        article,
-        title:card.title||null,
-        photos,
-        description
-      },
+      card:{article,title:card.title||null,photos,description},
       raw_text:description,
       detail_url:result.detail_url||null,
       page_url:result.page_url||null
