@@ -1,6 +1,6 @@
 'use client';
 import {useEffect,useState} from 'react';import {useParams} from 'next/navigation';import {AppShell} from '@/components/AppShell';
-const inputFields=[['seller_article','Артикул продавца'],['brand','Бренд'],['barcode','Штрихкод'],['manufacturer_part_number','Партномер производителя'],['grouping_number','Идентификатор объединения'],['tn_ved','Код ТН ВЭД']] as const;
+const inputFields=[['seller_article','Артикул продавца'],['brand','Бренд'],['barcode','Штрихкод'],['manufacturer_part_number','Партномер производителя'],['grouping_number','Идентификатор объединения'],['category','Категория'],['tn_ved','Код ТН ВЭД']] as const;
 const numFields=[['cost','Себестоимость, ₸'],['site_price','Цена сайта без акции, ₸'],['crossed_price','Зачёркнутая цена, ₸'],['package_length','Длина упаковки, см'],['package_width','Ширина упаковки, см'],['package_height','Высота упаковки, см'],['package_weight','Вес упаковки, кг']] as const;
 export default function Product(){const {id}=useParams<{id:string}>();const [p,setP]=useState<any>(null),[msg,setMsg]=useState(''),[busy,setBusy]=useState(''),[riv,setRiv]=useState<any>(null),[addVehicles,setAddVehicles]=useState(true),[addOem,setAddOem]=useState(true),[addRaw,setAddRaw]=useState(true),[suggestion,setSuggestion]=useState<any>(null);
  useEffect(()=>{fetch('/api/products?id='+id).then(r=>r.json()).then(x=>setP(x.product))},[id]);if(!p)return <AppShell><div className="empty">Загрузка…</div></AppShell>;
