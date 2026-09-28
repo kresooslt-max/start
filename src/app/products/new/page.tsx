@@ -1,0 +1,10 @@
+'use client';
+import {useState} from 'react';
+import {useRouter} from 'next/navigation';
+import {AppShell} from '@/components/AppShell';
+
+export default function NewProduct(){
+ const router=useRouter(); const [seller_article,setArticle]=useState(''); const [brand,setBrand]=useState(''); const [cost,setCost]=useState(''); const [error,setError]=useState(''); const [saving,setSaving]=useState(false);
+ async function submit(e:React.FormEvent){e.preventDefault();setSaving(true);setError('');try{const r=await fetch('/api/products',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({seller_article,brand,cost})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Не удалось создать карточку');router.push('/products/'+d.product.id)}catch(e){setError(e instanceof Error?e.message:'Не удалось создать карточку')}finally{setSaving(false)}}
+ return <AppShell><div className="topbar"><div><div className="eyebrow">NEW PRODUCT</div><div className="pageTitle">Создать карточку</div></div></div><div className="page"><form className="panel" onSubmit={submit}><div className="panelHead"><div><div className="panelTitle">Минимальные данные</div><div className="panelSub">Остальные поля можно заполнить вручную, через RIV или AI.</div></div></div><div className="formGrid"><div className="field"><label>Артикул продавца *</label><input required value={seller_article} onChange={e=>setArticle(e.target.value)} /></div><div className="field"><label>Бренд *</label><input required value={brand} onChange={e=>setBrand(e.target.value)} /></div><div className="field"><label>Себестоимость, ₸</label><input type="number" min="0" step="0.01" value={cost} onChange={e=>setCost(e.target.value)} /></div></div>{error&&<div className="errorBox">{error}</div>}<div className="topActions" style={{marginTop:16}}><button className="btn btnPrimary" disabled={saving}>{saving?'Создание…':'Создать карточку'}</button><a className="btn" href="/products">Отмена</a></div></form></div></AppShell>
+}

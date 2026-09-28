@@ -1,5 +1,5 @@
 'use client';
-import {useState} from 'react';
+import {useState} from 'react';import {useRouter} from 'next/navigation';
 import {AppShell} from '@/components/AppShell';
 import {Search, Copy, Check, CarFront, Database, AlertCircle} from 'lucide-react';
 
@@ -10,6 +10,7 @@ function yearsLabel(v:string|null){if(!v)return '—';if(v.endsWith('+'))return 
 function field(v:string|null){return v||'—'}
 
 export default function RivSearch(){
+ const router=useRouter();
  const [article,setArticle]=useState(''); const [loading,setLoading]=useState(false); const [error,setError]=useState(''); const [result,setResult]=useState<Result|null>(null); const [copied,setCopied]=useState('');
  async function search(){
   const a=article.trim(); if(!a)return;
@@ -19,6 +20,7 @@ export default function RivSearch(){
   finally{setLoading(false)}
  }
  async function copy(v:string,label:string){await navigator.clipboard?.writeText(v);setCopied(label);setTimeout(()=>setCopied(''),1200)}
+ async function createProduct(){if(!result)return;setLoading(true);try{const r=await fetch('/api/products',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({seller_article:result.article,brand:'Не указан'})});const d=await r.json();if(!r.ok)throw new Error(d.error);await fetch('/api/products/'+d.product.id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({riv_vehicles:result.vehicles,riv_oem:(result as any).oem||[],riv_raw_text:(result as any).raw_text||result.compatibility})});router.push('/products/'+d.product.id)}catch(e){setError(e instanceof Error?e.message:'Не удалось создать карточку')}finally{setLoading(false)}}
  return <AppShell>
   <div className="topbar"><div><div className="eyebrow">RIV.KZ</div><div className="pageTitle">Поиск по RIV</div></div><div className="topActions"><div className="badge badgeAmber">Только по запросу</div></div></div>
   <div className="page">
@@ -26,7 +28,7 @@ export default function RivSearch(){
    <section className="panel" style={{marginTop:12}}><div className="toolbar"><div className="search"><Search size={14}/><input value={article} onChange={e=>setArticle(e.target.value)} onKeyDown={e=>e.key==='Enter'&&search()} placeholder="Введите артикул, например 12345" /></div><button className="btn btnPrimary" onClick={search} disabled={loading||!article.trim()}>{loading?'Поиск...':'Найти в RIV'}</button></div>
    {error&&<div className="errorBox"><AlertCircle size={14}/> {error}</div>}</section>
    {result&&<div style={{marginTop:12}}>
-    <section className="panel"><div className="panelHead"><div><div className="panelTitle">Результат: {result.article}</div><div className="panelSub">{result.found?'Данные найдены в RIV.KZ':'По артикулу подходящие данные не найдены'}</div></div>{result.compatibility&&<button className="btn" onClick={()=>copy(result.compatibility||'','raw')}>{copied==='raw'?<Check size={13}/>:<Copy size={13}/>} Скопировать исходные данные</button>}</div>
+    <section className="panel"><div className="panelHead"><div><div className="panelTitle">Результат: {result.article}</div><div className="panelSub">{result.found?'Данные найдены в RIV.KZ':'По артикулу подходящие данные не найдены'}</div></div>{result.compatibility&&<button className="btn" onClick={()=>copy(result.compatibility||'','raw')}>{copied==='raw'?<Check size={13}/>:<Copy size={13}/>} Скопировать исходные данные</button>}<button className="btn btnPrimary" onClick={createProduct} disabled={loading}>Создать карточку из RIV</button></div>
     {!result.found?<div className="empty">RIV не вернул данные по этому артикулу.</div>:
     <>
       {result.vehicles.length>0&&<div className="tableWrap"><table><thead><tr><th>Марка</th><th>Модель / данные RIV</th><th>Кузов</th><th>Годы</th><th>Двигатель</th><th>OEM</th></tr></thead><tbody>{result.vehicles.map((v,i)=><tr key={i}><td><b>{field(v.brand)}</b></td><td>{v.raw}</td><td>{field(v.body)}</td><td>{yearsLabel(v.years)}</td><td>{field(v.engine)}</td><td>{field(v.oem)}</td></tr>)}</tbody></table></div>}
