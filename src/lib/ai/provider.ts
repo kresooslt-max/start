@@ -74,3 +74,36 @@ export async function generateRivExplanation(input:any){
  const j=await r.json();
  return RivExplanationSchema.parse(JSON.parse(j.choices?.[0]?.message?.content||'{}'));
 }
+
+
+export const CardSuggestionSchema=z.object({
+ name:z.string().nullable(),
+ annotation:z.string().nullable(),
+ description:z.string().nullable(),
+ hashtags:z.array(z.string()),
+ manufacturer_part_number:z.string().nullable(),
+ tn_ved:z.string().nullable(),
+ compatibility:z.array(z.any()),
+ oem:z.array(z.string()),
+ characteristics:z.record(z.string(),z.string())
+});
+
+export async function generateCardSuggestion(product:any){
+ const key=process.env.AI_API_KEY;
+ if(!key)throw new Error('AI_API_KEY_MISSING');
+ const model=process.env.AI_MODEL||'gpt-4o';
+ const system='Return JSON only. Never invent facts. This legacy compatibility endpoint is kept for backward compatibility; use only facts supplied in the product record.';
+ const r=await fetch('https://api.openai.com/v1/chat/completions',{
+  method:'POST',
+  headers:{'content-type':'application/json',authorization:'Bearer '+key},
+  body:JSON.stringify({
+   model,
+   messages:[{role:'system',content:system},{role:'user',content:JSON.stringify(product)}],
+   temperature:.1,
+   response_format:{type:'json_object'}
+  })
+ });
+ if(!r.ok)throw new Error('AI_REQUEST_FAILED '+r.status);
+ const j=await r.json();
+ return CardSuggestionSchema.parse(JSON.parse(j.choices?.[0]?.message?.content||'{}'));
+}
