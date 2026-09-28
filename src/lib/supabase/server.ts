@@ -1,1 +1,4 @@
-import {createServerClient} from '@supabase/ssr';import {cookies} from 'next/headers';export async function createClient(){const c=await cookies();return createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!,process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,{cookies:{getAll:()=>c.getAll(),setAll(items){try{items.forEach(({name,value,options})=>c.set(name,value,options))}catch{}}}})}
+import {createClient as createSupabaseClient} from '@supabase/supabase-js';
+export async function createClient(){
+  return createSupabaseClient(process.env.NEXT_PUBLIC_SUPABASE_URL!,process.env.SUPABASE_SECRET_KEY!,{auth:{persistSession:false,autoRefreshToken:false}});
+}
