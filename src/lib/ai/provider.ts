@@ -44,66 +44,38 @@ export const RivExplanationSchema=z.object({
   notes:z.string().nullable()
  })),
  fitment_description:z.string(),
- warnings:z.array(z.string())
+ warnings:z.array(z.string()),
+ sources:z.array(z.object({title:z.string(),url:z.string()}))
 });
 
 export async function generateRivExplanation(input:any){
- const key=process.env.AI_API_KEY;if(!key)throw new Error('AI_API_KEY_MISSING');
- const model=process.env.AI_MODEL||'gpt-4o';
- const system=`Ты эксперт по автозапчастям и расшифровке карточек RIV.KZ.
-Используй только переданные данные RIV. Не придумывай факты.
-Нельзя придумывать OEM, партномер, цену, автомобиль, кузов, двигатель, топливо, годы, технические характеристики.
-Если в RIV факт не найден, ставь null/пустой массив и добавляй понятное замечание.
-Разложи запутанную запись вроде "1.3 Trailblazer" на понятные поля только если соответствующие значения реально есть в переданных данных.
-Не называй артикул продавца OEM, если RIV этого прямо не указывает.
-Сохрани максимум полезных деталей и сделай понятный русский текст о том, что это за деталь и для каких автомобилей она подходит.`;
- const r=await fetch('https://api.openai.com/v1/chat/completions',{
-  method:'POST',
-  headers:{'content-type':'application/json',authorization:'Bearer '+key},
-  body:JSON.stringify({
-   model,
-   messages:[
-    {role:'system',content:system},
-    {role:'user',content:JSON.stringify({source:'RIV.KZ',...input})}
-   ],
-   temperature:.1,
-   response_format:{type:'json_object'}
-  })
- });
- if(!r.ok)throw new Error('AI_REQUEST_FAILED '+r.status);
- const j=await r.json();
- return RivExplanationSchema.parse(JSON.parse(j.choices?.[0]?.message?.content||'{}'));
-}
-
-
-export const CardSuggestionSchema=z.object({
- name:z.string().nullable(),
- annotation:z.string().nullable(),
- description:z.string().nullable(),
- hashtags:z.array(z.string()),
- manufacturer_part_number:z.string().nullable(),
- tn_ved:z.string().nullable(),
- compatibility:z.array(z.any()),
- oem:z.array(z.string()),
- characteristics:z.record(z.string(),z.string())
-});
-
-export async function generateCardSuggestion(product:any){
  const key=process.env.AI_API_KEY;
  if(!key)throw new Error('AI_API_KEY_MISSING');
  const model=process.env.AI_MODEL||'gpt-4o';
- const system='Return JSON only. Never invent facts. This legacy compatibility endpoint is kept for backward compatibility; use only facts supplied in the product record.';
- const r=await fetch('https://api.openai.com/v1/chat/completions',{
+ const system=`Ты эксперт по автозапчастям.
+На первом этапе пользователь передал ТОЛЬКО реальные данные карточки RIV.KZ: артикул, название, фото и внутреннее описание/применяемость.
+Твоя задача на втором этапе — разобраться, что означает эта запись, и найти недостающие сведения через переданные web-источники.
+Сначала определи реальную марку/модель/деталь по тексту RIV.
+Разложи сокращения и записи вроде "1.3 Trailblazer" на нормальные поля.
+Найди подтвержденные OEM/оригинальные номера, годы, кузов, двигатель, топливо и цену, когда это есть в web-источниках.
+Подробно опиши применяемость.
+Не выдавай догадки как факты. При конфликте источников укажи это в warnings.
+Если факт не удалось подтвердить — оставь null/пусто.
+Не считай артикул продавца OEM.
+sources должны содержать реальные URL, использованные для существенных фактов.
+Верни только JSON по схеме.`;
+ const response=await fetch('https://api.openai.com/v1/chat/completions',{
   method:'POST',
   headers:{'content-type':'application/json',authorization:'Bearer '+key},
   body:JSON.stringify({
    model,
-   messages:[{role:'system',content:system},{role:'user',content:JSON.stringify(product)}],
+   messages:[{role:'system',content:system},{role:'user',content:JSON.stringify(input)}],
    temperature:.1,
    response_format:{type:'json_object'}
   })
  });
- if(!r.ok)throw new Error('AI_REQUEST_FAILED '+r.status);
- const j=await r.json();
- return CardSuggestionSchema.parse(JSON.parse(j.choices?.[0]?.message?.content||'{}'));
+ if(!response.ok)throw new Error('AI_REQUEST_FAILED '+response.status);
+ const j=await response.json();
+ return RivExplanationSchema.parse(JSON.parse(j.choices?.[0]?.message?.content||'{}'));
 }
+
