@@ -165,23 +165,41 @@ async def extract_riv_description(page,node,article):
 
 async def extract_product_title(page,node,article):
     candidates=[]
+    scope=node
+    try:
+        scoped=node.locator("xpath=ancestor::*[self::article or contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'product') or contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'card')][1]")
+        if await scoped.count():
+            scope=scoped.first
+    except Exception:
+        pass
     for sel in ("h1","h2","h3","h4","h5","[class*='product-title']","[class*='product-name']","[class*='title']","[class*='name']"):
         try:
-            loc=page.locator(sel).filter(has_text=re.compile(r"\S+"))
-            count=min(await loc.count(),20)
+            loc=scope.locator(sel).filter(has_text=re.compile(r"\S+"))
+            count=min(await loc.count(),12)
             for i in range(count):
                 item=loc.nth(i)
                 if not await item.is_visible(timeout=250): continue
                 t=clean_text(await item.inner_text())
                 if 3<=len(t)<=220 and t.lower()!=article.lower() and not looks_like_ui_noise(t,article):
                     candidates.append(t)
-        except Exception: pass
+        except Exception:
+            pass
+    try:
+        img=scope.locator("img[alt]").filter(has_text=re.compile(r"\S+")).first
+        alt=clean_text(await img.get_attribute("alt"))
+        if alt and alt.lower()!=article.lower() and not looks_like_ui_noise(alt,article):
+            candidates.append(alt)
+    except Exception:
+        pass
     try:
         meta=page.locator('meta[property="og:title"]').first
         t=clean_text(await meta.get_attribute("content"))
-        if t and t.lower()!=article.lower() and not looks_like_ui_noise(t,article): candidates.append(t)
-    except Exception: pass
+        if t and t.lower()!=article.lower() and not looks_like_ui_noise(t,article):
+            candidates.append(t)
+    except Exception:
+        pass
     return max(candidates,key=lambda x:(article.lower() not in x.lower(),len(x))) if candidates else None
+
 
 async def extract_link(page,node,base):
     try:
