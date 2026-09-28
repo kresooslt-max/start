@@ -126,56 +126,137 @@ async def extract_candidate_text(page,node,article):
         return max(good,key=len)
     return clean_text(candidates[-1] if candidates else "")
 
+async def visible_text_candidates(page):
+    try:
+        return await page.evaluate("""() => {
+          const out=[];
+          const seen=new Set();
+          for(const el of document.querySelectorAll('div,span,section,article,td,p,a')) {
+            const s=getComputedStyle(el),r=el.getBoundingClientRect(),z=parseInt(s.zIndex||'0'),t=(el.innerText||'').trim();
+            if(!t || seen.has(t)) continue;
+            if((s.position==='absolute'||s.position==='fixed'||s.position==='sticky') &&
+               s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0' &&
+               z>=10 && r.width>30 && r.height>8) {
+              seen.add(t);
+              out.push(t);
+            }
+          }
+          return out.slice(0,80);
+        }""")
+    except Exception:
+        return []
+
+def description_score(text,article):
+    t=clean_text(text)
+    if not t or len(t)<6 or looks_like_ui_noise(t,article):
+        return -1
+    if t.lower()==article.lower():
+        return -1
+    score=min(len(t),500)
+    low=t.lower()
+    for word in ("год","двиг","кузов","седан","универсал","кроссовер","внедорож","бензин","дизель","turbo","trailblazer"):
+        if word in low: score+=80
+    if re.search(r"\b(?:19|20)\d{2}\b",t): score+=100
+    return score
+
 async def extract_riv_description(page,node,article):
     values=[]
-    for event in ("pointerover","mouseover","mouseenter","mousemove"):
-        try: await node.dispatch_event(event)
-        except Exception: pass
-    try: await page.wait_for_timeout(900)
-    except Exception: pass
-    try:
-        described=await node.get_attribute("aria-describedby")
-        if described:
-            for ident in described.split():
-                loc=page.locator("#"+ident).first
+    nodes=[node]
+    # RIV раньше показывал применяемость через hover/tooltip на связанных элементах,
+    # поэтому одного span.text-ink недостаточно: пробуем ближайшие элементы карточки.
+    for sel in ("h1","h2","h3","h4","h5",".title",".name","span.text-ink","p","td","a",
+                "[title]","[data-title]","[data-original-title]","[aria-describedby]"):
+        try:
+            loc=node.locator("xpath=ancestor::*").locator(sel).first
+            if await loc.is_visible(timeout=300):
+                nodes.append(loc)
+        except Exception:
+            pass
+
+    for candidate in nodes:
+        try:
+            await trigger_hover(page,candidate)
+            await page.wait_for_timeout(850)
+        except Exception:
+            pass
+
+        try:
+            described=await candidate.get_attribute("aria-describedby")
+            if described:
+                for ident in described.split():
+                    try:
+                        loc=page.locator("#"+ident).first
+                        if await loc.is_visible(timeout=500):
+                            values.append(await loc.inner_text())
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        for sel in (
+            'div[role="tooltip"]','div.tooltip','div.popover','.tooltip-inner','.tippy-content',
+            '[data-radix-popper-content-wrapper]','[data-popper-placement]',
+            '[class*="tooltip"]','[class*="popover"]'
+        ):
+            try:
+                loc=page.locator(sel).filter(has_text=re.compile(r"\S+")).last
                 if await loc.is_visible(timeout=500):
-                    t=clean_text(await loc.inner_text())
-                    if t and not looks_like_ui_noise(t,article): values.append(t)
-    except Exception: pass
-    for sel in (
-        'div[role="tooltip"]','div.tooltip','div.popover','.tooltip-inner','.tippy-content',
-        '[data-radix-popper-content-wrapper]','[data-popper-placement]',
-        '[class*="tooltip"]','[class*="popover"]'
-    ):
-        try:
-            loc=page.locator(sel).filter(has_text=re.compile(r"\S+")).last
-            if await loc.is_visible(timeout=500):
-                t=clean_text(await loc.inner_text())
-                if t and not looks_like_ui_noise(t,article): values.append(t)
-        except Exception: pass
-    for attr in ("title","data-original-title","data-title","aria-label"):
-        try:
-            t=clean_text(await node.get_attribute(attr))
-            if t and t.lower()!=article.lower() and not looks_like_ui_noise(t,article): values.append(t)
-        except Exception: pass
-    if values: return max(values,key=len)
-    candidates=await ancestor_text(page,node,article)
-    candidates=[clean_text(x) for x in candidates if clean_text(x) and not looks_like_ui_noise(x,article) and clean_text(x).lower()!=article.lower()]
-    return max(candidates,key=len) if candidates else None
+                    values.append(await loc.inner_text())
+            except Exception:
+                pass
+
+        for text in await visible_text_candidates(page):
+            values.append(text)
+
+        for attr in ("title","data-original-title","data-title","aria-label"):
+            try:
+                values.append(await candidate.get_attribute(attr))
+            except Exception:
+                pass
+
+    scored=[]
+    seen=set()
+    for value in values:
+        text=clean_text(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        score=description_score(text,article)
+        if score>=0:
+            scored.append((score,text))
+    if scored:
+        return max(scored,key=lambda x:x[0])[1]
+    return None
+
+async def card_text(page,node):
+    try:
+        return await node.evaluate("""el => {
+          const candidates=[el.closest('a'),el.closest('article'),el.closest('li'),
+            el.closest('[class*="card"]'),el.closest('[class*="product"]'),el.parentElement,el];
+          for(const c of candidates){
+            if(!c) continue;
+            const t=(c.innerText||'').trim();
+            if(t && t.length>10) return t;
+          }
+          return '';
+        }""")
+    except Exception:
+        return ""
 
 async def extract_product_title(page,node,article):
     candidates=[]
     scope=node
     try:
-        scoped=node.locator("xpath=ancestor::*[self::article or contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'product') or contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'card')][1]")
+        scoped=node.locator("xpath=ancestor::*[self::article or contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'product') or contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'card') or self::li][1]")
         if await scoped.count():
             scope=scoped.first
     except Exception:
         pass
+
     for sel in ("h1","h2","h3","h4","h5","[class*='product-title']","[class*='product-name']","[class*='title']","[class*='name']"):
         try:
             loc=scope.locator(sel).filter(has_text=re.compile(r"\S+"))
-            count=min(await loc.count(),12)
+            count=min(await loc.count(),16)
             for i in range(count):
                 item=loc.nth(i)
                 if not await item.is_visible(timeout=250): continue
@@ -184,21 +265,37 @@ async def extract_product_title(page,node,article):
                     candidates.append(t)
         except Exception:
             pass
-    try:
-        img=scope.locator("img[alt]").filter(has_text=re.compile(r"\S+")).first
-        alt=clean_text(await img.get_attribute("alt"))
-        if alt and alt.lower()!=article.lower() and not looks_like_ui_noise(alt,article):
-            candidates.append(alt)
-    except Exception:
-        pass
+
+    # Универсальный fallback: название часто находится в обычном тексте карточки,
+    # а не в h1/h2/title-классе.
+    raw=clean_text(await card_text(page,node))
+    if raw:
+        for line in re.split(r"[\n\r]+",raw):
+            t=clean_text(line)
+            low=t.lower()
+            if not t or t.lower()==article.lower() or len(t)<3 or len(t)>220:
+                continue
+            if looks_like_ui_noise(t,article):
+                continue
+            if re.search(r"(?:цена|₸|тг|вs*наличии|код|артикул|part|oem)",low):
+                continue
+            candidates.append(t)
+
     try:
         meta=page.locator('meta[property="og:title"]').first
         t=clean_text(await meta.get_attribute("content"))
-        if t and t.lower()!=article.lower() and not looks_like_ui_noise(t,article):
+        # Глобальный og:title нередко является названием всего сайта, поэтому
+        # принимаем его только при явном совпадении с артикулом.
+        if t and article.lower() in t.lower() and not looks_like_ui_noise(t,article):
             candidates.append(t)
     except Exception:
         pass
-    return max(candidates,key=lambda x:(article.lower() not in x.lower(),len(x))) if candidates else None
+
+    unique_candidates=[]
+    for t in candidates:
+        if t not in unique_candidates:
+            unique_candidates.append(t)
+    return max(unique_candidates,key=lambda x:len(x)) if unique_candidates else None
 
 
 async def extract_link(page,node,base):
@@ -502,7 +599,7 @@ async def search(data:SearchRequest,authorization:str|None=Header(default=None))
                 if detail:
                     title=detail.get("title") or title
                     photos=detail.get("photos",[]) or []
-                    detail_description=detail.get("raw_text") or ""
+                    detail_description=detail.get("description") or ""
                 else:
                     photos=await extract_images_from_node(node)
                     detail_description=""
